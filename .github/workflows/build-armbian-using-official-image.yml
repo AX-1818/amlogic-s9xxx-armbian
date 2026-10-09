@@ -447,19 +447,21 @@ jobs:
         run: |
           # The ophub action would download the URL itself, but saves it under a name
           # that includes the URL query string, which breaks xz -dk. Pre-download
-          # with a clean filename instead; the action sees the file exists and skips.
-          mkdir -p /builder/build/output/images
+          # into a scratch dir (NOT build/output/images: anything there gets
+          # uploaded to the Release as an asset) with a clean filename; the action
+          # copies it into the output dir when it runs.
+          mkdir -p pre-image
           echo -e "Downloading: [ ${ARMBIAN_URL} ]"
-          curl -fsSL "${{ env.ARMBIAN_URL }}" -o "/builder/build/output/images/${{ env.ARMBIAN_CLEAN_NAME }}"
+          curl -fsSL "${{ env.ARMBIAN_URL }}" -o "pre-image/${{ env.ARMBIAN_CLEAN_NAME }}"
           sync
-          echo -e "Pre-downloaded files: \n$(ls -lh /builder/build/output/images/)"
+          echo -e "Pre-downloaded files: \n$(ls -lh pre-image/)"
 
       - name: Rebuild Armbian for target boards
         uses: ophub/amlogic-s9xxx-armbian@main
         if: ${{ env.ARMBIAN_URL != '' && !cancelled() }}
         with:
           build_target: armbian
-          armbian_path: build/output/images/${{ env.ARMBIAN_CLEAN_NAME }}
+          armbian_path: pre-image/${{ env.ARMBIAN_CLEAN_NAME }}
           armbian_board: ${{ inputs.armbian_board }}
           armbian_kernel: ${{ inputs.armbian_kernel }}
           auto_kernel: ${{ inputs.auto_kernel }}
@@ -484,24 +486,41 @@ jobs:
             gunzip -kf "${img_gz}"
             img="${img_gz%.gz}"
             dev=$(sudo losetup --find --show -P "${img}")
-            if [[ -b "${dev}p2" ]]; then
+            # Wait for the kernel partition scan (up to 30 s): pN devices appear
+            # asynchronously after losetup -P and may not exist yet.
+            for _ in $(seq 1 60); do
+              [[ -b "${dev}p1" || -b "${dev}p2" ]] && break
+              sleep 0.5
+            done
+            # The rootfs is the ext4 partition; the boot partition may be vfat.
+            # Pick the ext4 one explicitly instead of guessing p1/p2.
+            part=""
+            for p in "${dev}"p1 "${dev}"p2 "${dev}"p3 "${dev}"p4; do
+              [[ -b "${p}" ]] || continue
+              fstype="$(blkid -s TYPE -o value "${p}" 2>/dev/null || echo "")"
+              if [[ "${fstype}" == "ext4" ]]; then
+                part="${p}"
+                break
+              fi
+            done
+            if [[ -z "${part}" ]]; then
               part="${dev}p2"
-            elif [[ -b "${dev}p1" ]]; then
-              part="${dev}p1"
-            else
-              echo "Error: No partition found on ${img}"
-              sudo losetup -d "${dev}"
-              exit 1
             fi
             mnt="$(mktemp -d)"
             sudo mount "${part}" "${mnt}"
-            if [[ -f "${mnt}/root/.no_rootfs_resize" ]]; then
-              echo "no" | sudo tee "${mnt}/root/.no_rootfs_resize" >/dev/null
-              sync
-              echo "Flag set to no (first-boot auto-expansion disabled): ${img}"
-            else
-              echo "Warning: /root/.no_rootfs_resize not found in ${img}, skipped."
+            if [[ ! -d "${mnt}/root" ]]; then
+              echo "Error: mounted ${part} has no root/ directory (wrong partition?)"
+              sudo umount "${mnt}"
+              sudo losetup -d "${dev}"
+              rmdir "${mnt}"
+              exit 1
             fi
+            # start_service.sh resizes the root partition on first boot only when
+            # this file exists AND contains "yes". Writing "no" (even creating the
+            # file if the build didn't) guarantees a fixed-size root partition.
+            echo "no" | sudo tee "${mnt}/root/.no_rootfs_resize" >/dev/null
+            sync
+            echo "Flag set to no (first-boot auto-expansion disabled) on ${part}: ${img}"
             sudo umount "${mnt}"
             sudo losetup -d "${dev}"
             rmdir "${mnt}"
@@ -510,12 +529,18 @@ jobs:
             else
               gzip -f "${img}"
             fi
+            rm -f "${img}"
+            echo "Repackaged: ${img_gz}"
           done
+          # Drop intermediates so only the final .img.gz asset is uploaded:
+          # the pre-downloaded base image (.xz) and the action's renamed .img.
+          rm -f *.xz Armbian*-trunk_*.img
           ls -lh
+          exit 0
 
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        if: ${{ env.PACKAGED_STATUS == 'success' && !failure() && !cancelled() }}
         with:
           tag: ${{ env.build_tag }}
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
