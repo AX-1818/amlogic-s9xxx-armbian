@@ -16,7 +16,7 @@ on:
       armbian_board:
         description: "Select device board."
         required: false
-        default: "amlogic"
+        default: "nsy-g16-plus"
         type: choice
         options:
           - allwinner
@@ -266,7 +266,7 @@ on:
       armbian_kernel:
         description: "Select kernel version."
         required: false
-        default: "6.12.y_6.18.y"
+        default: "6.18.y"
         type: choice
         options:
           - 5.10.y
@@ -309,6 +309,11 @@ on:
         options:
           - ext4
           - btrfs
+      armbian_size:
+        description: "Set armbian BOOTFS and ROOTFS partition size (e.g. 512/10240)."
+        required: false
+        default: "512/10240"
+        type: string
       armbian_edition:
         description: "Select image edition type."
         required: false
@@ -438,7 +443,52 @@ jobs:
           kernel_repo: ${{ inputs.kernel_repo }}
           kernel_usage: ${{ inputs.kernel_usage }}
           armbian_fstype: ${{ inputs.armbian_fstype }}
+          armbian_size: ${{ inputs.armbian_size }}
           builder_name: ${{ inputs.builder_name }}
+
+      - name: Disable first-boot auto-expansion in built images
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        run: |
+          # The rebuild writes "yes" to /root/.no_rootfs_resize, which makes
+          # armbian-fix expand the root partition to 100% of the disk on first
+          # boot (armbian-fix -> armbian-tf, no size cap). Flip it to "no" so the
+          # root partition stays at the size set by [ armbian_size ]. Run
+          # `armbian-tf` manually on the device to expand to the whole disk later.
+          cd "${{ env.PACKAGED_OUTPUTPATH }}"
+          shopt -s nullglob
+          for img_gz in *.img.gz; do
+            echo "Processing: ${img_gz}"
+            gunzip -kf "${img_gz}"
+            img="${img_gz%.gz}"
+            dev=$(sudo losetup --find --show -P "${img}")
+            if [[ -b "${dev}p2" ]]; then
+              part="${dev}p2"
+            elif [[ -b "${dev}p1" ]]; then
+              part="${dev}p1"
+            else
+              echo "Error: No partition found on ${img}"
+              sudo losetup -d "${dev}"
+              exit 1
+            fi
+            mnt="$(mktemp -d)"
+            sudo mount "${part}" "${mnt}"
+            if [[ -f "${mnt}/root/.no_rootfs_resize" ]]; then
+              echo "no" | sudo tee "${mnt}/root/.no_rootfs_resize" >/dev/null
+              sync
+              echo "Flag set to no (first-boot auto-expansion disabled): ${img}"
+            else
+              echo "Warning: /root/.no_rootfs_resize not found in ${img}, skipped."
+            fi
+            sudo umount "${mnt}"
+            sudo losetup -d "${dev}"
+            rmdir "${mnt}"
+            if command -v pigz >/dev/null 2>&1; then
+              pigz -qf "${img}"
+            else
+              gzip -f "${img}"
+            fi
+          done
+          ls -lh
 
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main
