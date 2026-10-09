@@ -457,7 +457,7 @@ jobs:
           echo -e "Pre-downloaded files: \n$(ls -lh pre-image/)"
 
       - name: Rebuild Armbian for target boards
-        uses: ophub/amlogic-s9xxx-armbian@main
+        uses: AX-1818/amlogic-s9xxx-armbian@main
         if: ${{ env.ARMBIAN_URL != '' && !cancelled() }}
         with:
           build_target: armbian
@@ -470,81 +470,6 @@ jobs:
           armbian_fstype: ${{ inputs.armbian_fstype }}
           armbian_size: ${{ inputs.armbian_size }}
           builder_name: ${{ inputs.builder_name }}
-
-      - name: Disable first-boot auto-expansion in built images
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
-        run: |
-          # The rebuild writes "yes" to /root/.no_rootfs_resize, which makes
-          # armbian-fix expand the root partition to 100% of the disk on first
-          # boot (armbian-fix -> armbian-tf, no size cap). Flip it to "no" so the
-          # root partition stays at the size set by [ armbian_size ]. Run
-          # `armbian-tf` manually on the device to expand to the whole disk later.
-          cd "${{ env.PACKAGED_OUTPUTPATH }}"
-          shopt -s nullglob
-          for img_gz in *.img.gz; do
-            echo "Processing: ${img_gz}"
-            gunzip -kf "${img_gz}"
-            img="${img_gz%.gz}"
-            dev=$(sudo losetup --find --show -P "${img}")
-            # Wait for the kernel partition scan (up to 30 s): pN devices appear
-            # asynchronously after losetup -P and may not exist yet.
-            for _ in $(seq 1 60); do
-              [[ -b "${dev}p1" || -b "${dev}p2" ]] && break
-              sleep 0.5
-            done
-            # The rootfs is the ext4 partition; the boot partition may be vfat.
-            # Pick the ext4 one explicitly instead of guessing p1/p2.
-            part=""
-            for p in "${dev}"p1 "${dev}"p2 "${dev}"p3 "${dev}"p4; do
-              [[ -b "${p}" ]] || continue
-              fstype="$(blkid -s TYPE -o value "${p}" 2>/dev/null || echo "")"
-              if [[ "${fstype}" == "ext4" ]]; then
-                part="${p}"
-                break
-              fi
-            done
-            if [[ -z "${part}" ]]; then
-              part="${dev}p2"
-            fi
-            mnt="$(mktemp -d)"
-            sudo mount "${part}" "${mnt}"
-            if [[ ! -d "${mnt}/root" ]]; then
-              echo "Error: mounted ${part} has no root/ directory (wrong partition?)"
-              sudo umount "${mnt}" || true
-              sudo losetup -d "${dev}" || true
-              rmdir "${mnt}" 2>/dev/null || true
-              exit 1
-            fi
-            # start_service.sh resizes the root partition on first boot only when
-            # this file exists AND contains "yes". Writing "no" (even creating the
-            # file if the build didn't) guarantees a fixed-size root partition.
-            echo "no" | sudo tee "${mnt}/root/.no_rootfs_resize" >/dev/null
-            sync
-            echo "Flag set to no (first-boot auto-expansion disabled) on ${part}: ${img}"
-            # Best-effort teardown: the critical operation (flag written + synced)
-            # is already done, so a stuck detach must not fail the run. Log each
-            # step's outcome so a recurring problem is visible.
-            if ! sudo umount "${mnt}"; then
-              echo "Warning: clean umount failed, trying lazy umount"
-              sudo umount -l "${mnt}" || true
-            fi
-            if ! sudo losetup -d "${dev}"; then
-              echo "Warning: loop detach failed (runner teardown will release it)"
-            fi
-            rmdir "${mnt}" 2>/dev/null || true
-            if command -v pigz >/dev/null 2>&1; then
-              pigz -qf "${img}"
-            else
-              gzip -f "${img}"
-            fi
-            echo "Repackaged: ${img_gz}"
-            rm -f "${img}"
-          done
-          # Drop intermediates so only the final .img.gz asset is uploaded:
-          # the pre-downloaded base image (.xz) and the action's renamed .img.
-          rm -f *.xz Armbian*-trunk_*.img
-          ls -lh
-          exit 0
 
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main

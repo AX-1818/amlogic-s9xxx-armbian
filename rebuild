@@ -1226,8 +1226,11 @@ refactor_rootfs() {
         chmod +x etc/update-motd.d/{10-*,20-*,30-*}
     }
 
-    # Explicitly disable resizing for Amlogic device [ /usr/lib/armbian/armbian-resize-filesystem ], use armbian-tf settings
-    echo "yes" >root/.no_rootfs_resize
+    # Explicitly disable resizing for Amlogic device [ /usr/lib/armbian/armbian-resize-filesystem ], use armbian-tf settings.
+    # AX-1818 fork: write "no" so the root partition keeps the size set by [ armbian_size ]
+    # (start_service.sh only auto-expands when this file exists AND contains "yes").
+    # Run `armbian-tf` on the device later to expand to the whole disk if needed.
+    echo "no" >root/.no_rootfs_resize
 
     # Reduce network latency [ A start job is running for raise network interfaces (5 mins 1 sec) ]
     network_service="usr/lib/systemd/system/networking.service"
