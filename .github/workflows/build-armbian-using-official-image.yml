@@ -510,9 +510,9 @@ jobs:
             sudo mount "${part}" "${mnt}"
             if [[ ! -d "${mnt}/root" ]]; then
               echo "Error: mounted ${part} has no root/ directory (wrong partition?)"
-              sudo umount "${mnt}"
-              sudo losetup -d "${dev}"
-              rmdir "${mnt}"
+              sudo umount "${mnt}" || true
+              sudo losetup -d "${dev}" || true
+              rmdir "${mnt}" 2>/dev/null || true
               exit 1
             fi
             # start_service.sh resizes the root partition on first boot only when
@@ -521,16 +521,24 @@ jobs:
             echo "no" | sudo tee "${mnt}/root/.no_rootfs_resize" >/dev/null
             sync
             echo "Flag set to no (first-boot auto-expansion disabled) on ${part}: ${img}"
-            sudo umount "${mnt}"
-            sudo losetup -d "${dev}"
-            rmdir "${mnt}"
+            # Best-effort teardown: the critical operation (flag written + synced)
+            # is already done, so a stuck detach must not fail the run. Log each
+            # step's outcome so a recurring problem is visible.
+            if ! sudo umount "${mnt}"; then
+              echo "Warning: clean umount failed, trying lazy umount"
+              sudo umount -l "${mnt}" || true
+            fi
+            if ! sudo losetup -d "${dev}"; then
+              echo "Warning: loop detach failed (runner teardown will release it)"
+            fi
+            rmdir "${mnt}" 2>/dev/null || true
             if command -v pigz >/dev/null 2>&1; then
               pigz -qf "${img}"
             else
               gzip -f "${img}"
             fi
-            rm -f "${img}"
             echo "Repackaged: ${img_gz}"
+            rm -f "${img}"
           done
           # Drop intermediates so only the final .img.gz asset is uploaded:
           # the pre-downloaded base image (.xz) and the action's renamed .img.
