@@ -436,7 +436,12 @@ jobs:
 
           mkdir -p /builder/build
           ln -sf /builder/build ${{ github.workspace }}/build
-          ln -sf /builder/build /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/build
+          # Link the virtual disk into the Rebuild action's checkout dir so its
+          # `build/output/images` lands on the 100 GiB disk. The action owner can
+          # be ophub or a fork (AX-1818), so match both; best-effort (the action
+          # is checked out after this step, so the target may not exist yet).
+          ln -sf /builder/build /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/build 2>/dev/null || true
+          ln -sf /builder/build /home/runner/work/_actions/AX-1818/amlogic-s9xxx-armbian/main/build 2>/dev/null || true
 
           sudo timedatectl set-timezone "${TZ}"
           echo "build_tag=Armbian${set_release}_arm64_${{ inputs.armbian_edition }}_$(date +"%Y.%m")" >> ${GITHUB_ENV}
