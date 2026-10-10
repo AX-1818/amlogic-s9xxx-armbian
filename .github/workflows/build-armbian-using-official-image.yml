@@ -12,7 +12,10 @@ on:
       armbian_url:
         description: "Set the Armbian source image URL."
         required: false
-        default: ""
+        # AX-1818 fork: default to the proven iStoreNextA Qemu arm64 minimal base
+        # (NSY-G16-Plus stitching). An empty value would silently fall back to an
+        # odroidn2 noble image, which is the wrong base for this fork.
+        default: "http://my.tmos.cn:11880/api/v1/s/cff60ae7/download/iStoreNextA_26.2.1_Qemu-uefi-arm64_trixie_current_6.18.10_minimal.img.xz?path=iStoreNextA_26.2.1_Qemu-uefi-arm64_trixie_current_6.18.10_minimal.img.xz&pwd=qsyh"
       armbian_board:
         description: "Select device board."
         required: false
@@ -476,6 +479,43 @@ jobs:
           armbian_size: ${{ inputs.armbian_size }}
           builder_name: ${{ inputs.builder_name }}
 
+      - name: Verify image contents (dtb / network / resize flag / modules)
+        if: ${{ env.PACKAGED_STATUS == 'success' && !failure() && !cancelled() }}
+        run: |
+          set -e
+          out="${{ env.PACKAGED_OUTPUTPATH }}"
+          img_gz=$(ls ${out}/Armbian_*_${{ inputs.armbian_board }}_*.img.gz 2>/dev/null | head -n 1)
+          [[ -n "${img_gz}" ]] || { echo "::error::No built image found in [ ${out} ]"; exit 1; }
+          echo "Verifying image: ${img_gz}"
+          mkdir -p /builder/verify && cd /builder/verify
+          pigz -dc "${img_gz}" > verify.img
+          loop=$(sudo losetup -f --show -P verify.img)
+          for i in $(seq 1 15); do [[ -b "${loop}p2" ]] && break; sleep 2; done
+          sudo mkdir -p mntboot mntroot
+          sudo mount -o ro "${loop}p1" mntboot
+          sudo mount -o ro "${loop}p2" mntroot
+          fail=0
+          chk() { if eval "$2"; then echo "PASS: $1"; else echo "::error::FAIL: $1"; fail=1; fi; }
+          chk "board dtb rk3568-nsy-g16-plus.dtb exists in /boot/dtb/rockchip" \
+              '[[ -f mntboot/dtb/rockchip/rk3568-nsy-g16-plus.dtb ]]'
+          chk "extlinux.conf references rk3568-nsy-g16-plus.dtb" \
+              'grep -q "rk3568-nsy-g16-plus.dtb" mntboot/extlinux/extlinux.conf'
+          chk "extlinux.conf keeps net.ifnames=0 (eth0..eth4 naming)" \
+              'grep -q "net.ifnames=0" mntboot/extlinux/extlinux.conf'
+          chk "no_rootfs_resize flag is no (rootfs stays at armbian_size)" \
+              'grep -qx "no" mntroot/root/.no_rootfs_resize'
+          chk "/etc/network/interfaces configures eth0 via dhcp" \
+              'grep -q "^iface eth0 inet dhcp" mntroot/etc/network/interfaces'
+          chk "/etc/network/interfaces configures eth4 via dhcp (all 5 ports)" \
+              'grep -q "^iface eth4 inet dhcp" mntroot/etc/network/interfaces'
+          chk "kernel modules installed under /usr/lib/modules" \
+              '[[ -n "$(ls -A mntroot/usr/lib/modules 2>/dev/null)" ]]'
+          sudo umount mntboot mntroot
+          sudo losetup -d "${loop}"
+          cd / && sudo rm -rf /builder/verify
+          [[ "${fail}" == "0" ]] || { echo "::error::Image verification FAILED - refusing to upload."; exit 1; }
+          echo "All image checks passed."
+
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main
         if: ${{ env.PACKAGED_STATUS == 'success' && !failure() && !cancelled() }}
@@ -494,5 +534,5 @@ jobs:
             - Install command: `armbian-install`
             - Update command: `armbian-update`
             ### Applicable Platform
-            - 🐧 `arm64`
-            - 🐋 Docker image: https://hub.docker.com/u/ophub
+            - ?? `arm64`
+            - ?? Docker image: https://hub.docker.com/u/ophub

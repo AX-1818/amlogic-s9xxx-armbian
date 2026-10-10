@@ -1,0 +1,26 @@
+# NSY-G16-Plus (rk3568, 5-port GbE) network configuration.
+# Baked in via fork different-files: the iStoreNextA Qemu base rootfs ships an
+# EMPTY /etc/network/interfaces with ifupdown enabled, so all 5 ports stayed
+# down (no DHCP) on first boot. The board cmdline sets net.ifnames=0
+# (see bootfs/extlinux/extlinux.conf.bak and armbianEnv.txt extraboardargs),
+# so the ports enumerate as eth0..eth4.
+
+source /etc/network/interfaces.d/*
+
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+
+auto eth1
+iface eth1 inet dhcp
+
+auto eth2
+iface eth2 inet dhcp
+
+auto eth3
+iface eth3 inet dhcp
+
+auto eth4
+iface eth4 inet dhcp
