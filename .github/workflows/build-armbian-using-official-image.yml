@@ -495,7 +495,9 @@ jobs:
           sudo mount -o ro "${loop}p1" mntboot
           sudo mount -o ro "${loop}p2" mntroot
           fail=0
-          chk() { if eval "$2"; then echo "PASS: $1"; else echo "::error::FAIL: $1"; fail=1; fi; }
+          # Run every check as root: files under /root (0700 root:root) and
+          # other root-owned paths are unreadable for the runner user.
+          chk() { if sudo bash -c "$2"; then echo "PASS: $1"; else echo "::error::FAIL: $1"; fail=1; fi; }
           chk "board dtb rk3568-nsy-g16-plus.dtb exists in /boot/dtb/rockchip" \
               '[[ -f mntboot/dtb/rockchip/rk3568-nsy-g16-plus.dtb ]]'
           chk "extlinux.conf references rk3568-nsy-g16-plus.dtb" \
